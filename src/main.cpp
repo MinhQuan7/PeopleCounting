@@ -25,8 +25,8 @@ using byte = uint8_t;
 
 MFRC522 rfid(SS_PIN, RST_PIN);
 
-const char ssid[] = "vitaltrack";
-const char pass[] = "vitaltracksolutions";
+const char ssid[] = "eoh.io";
+const char pass[] = "Eoh@2020";
 
 // Authorized RFID card
 const uint8_t authorizedUID[] = {0xE0, 0x03, 0xA6, 0x19};
@@ -80,7 +80,16 @@ String getFormattedTime()
   sprintf(timeStr, "%02d:%02d:%02d", hours, minutes, seconds);
   return String(timeStr);
 }
-
+void logStudentCount(String event)
+{
+  String currentTime = getFormattedTime();
+  Serial.print(event + " Time: ");
+  Serial.println(currentTime);
+  Serial.print("Enter count: ");
+  Serial.println(enterCount);
+  Serial.print("Exit count: ");
+  Serial.println(exitCount);
+}
 void handleRFIDCount()
 {
   if (!rfid.PICC_IsNewCardPresent() || !rfid.PICC_ReadCardSerial())
@@ -211,13 +220,3 @@ void loop()
   lastResetButtonState = resetButtonState;
 }
 
-void logStudentCount(String event)
-{
-  String currentTime = getFormattedTime();
-  Serial.print(event + " Time: ");
-  Serial.println(currentTime);
-  Serial.print("Enter count: ");
-  Serial.println(enterCount);
-  Serial.print("Exit count: ");
-  Serial.println(exitCount);
-}

@@ -3,125 +3,221 @@
 #define ERA_AUTH_TOKEN "7d47f69f-b84e-4b72-af1d-84f1306caf53"
 
 #include <Arduino.h>
+#ifdef byte
+#undef byte
+#endif
+using byte = uint8_t;
+
+#include <SPI.h>
+#include <MFRC522.h>
 #include <ERa.hpp>
 #include <WiFi.h>
 
-#define LED_PIN  2
+// Pin definitions
+#define SS_PIN 5
+#define RST_PIN 22
+#define LED_PIN 2
 #define resetButton 25
-const char ssid[] = "eoh.io";
-const char pass[] = "Eoh@2020";
+#define LEDWELCOME 26
+#define LEDREJECT 27
+#define enterButtonPin 34
+#define exitButtonPin 35
 
-void logStudentCount(String event);
+MFRC522 rfid(SS_PIN, RST_PIN);
 
-// Define pins for buttons
-const int enterButtonPin = 34;
-const int exitButtonPin = 35;
+const char ssid[] = "vitaltrack";
+const char pass[] = "vitaltracksolutions";
 
-// Variables to track counts and button states
+// Authorized RFID card
+const uint8_t authorizedUID[] = {0xE0, 0x03, 0xA6, 0x19};
+
+// Variables for counting
 int enterCount = 0;
 int exitCount = 0;
 int lastEnterButtonState = HIGH;
 int lastExitButtonState = HIGH;
 int lastResetButtonState = HIGH;
 
-//___________Boolean check________________
-boolean checkDeparture = false; // V2: allow counting up
-boolean checkStop = false;      // V3: disallow any counting
-boolean checkEnd = false;       // V4: allow counting down
+// Control flags
+boolean checkDeparture = false;
+boolean checkStop = false;
+boolean checkEnd = false;
 
-ERA_WRITE(V2) {
-    uint8_t value_go = param.getInt();
-    checkDeparture = (value_go == 1);
-    checkStop = false;
-    checkEnd = false;
+// ERa virtual pin handlers
+ERA_WRITE(V2)
+{
+  uint8_t value_go = param.getInt();
+  checkDeparture = (value_go == 1);
+  checkStop = false;
+  checkEnd = false;
 }
 
-ERA_WRITE(V3) {
-    uint8_t value_stop = param.getInt();
-    checkStop = (value_stop == 1);
-    checkDeparture = false;
-    checkEnd = false; 
+ERA_WRITE(V3)
+{
+  uint8_t value_stop = param.getInt();
+  checkStop = (value_stop == 1);
+  checkDeparture = false;
+  checkEnd = false;
 }
 
-ERA_WRITE(V4) {
-    uint8_t value_end = param.getInt();
-    checkEnd = (value_end == 1);
-    checkDeparture = false;
-    checkStop = false;
+ERA_WRITE(V4)
+{
+  uint8_t value_end = param.getInt();
+  checkEnd = (value_end == 1);
+  checkDeparture = false;
+  checkStop = false;
 }
 
-// Hàm lấy thời gian định dạng từ ERa
-String getFormattedTime() {
-    unsigned long timeInSeconds = ERaMillis() / 1000;
-    int hours = (timeInSeconds / 3600) % 24;
-    int minutes = (timeInSeconds / 60) % 60;
-    int seconds = timeInSeconds % 60;
-    
-    char timeStr[9];
-    sprintf(timeStr, "%02d:%02d:%02d", hours, minutes, seconds);
-    return String(timeStr);
+// Time formatting function
+String getFormattedTime()
+{
+  unsigned long timeInSeconds = ERaMillis() / 1000;
+  int hours = (timeInSeconds / 3600) % 24;
+  int minutes = (timeInSeconds / 60) % 60;
+  int seconds = timeInSeconds % 60;
+
+  char timeStr[9];
+  sprintf(timeStr, "%02d:%02d:%02d", hours, minutes, seconds);
+  return String(timeStr);
 }
 
-void timerEvent() {
-    ERA_LOG("Timer", "Uptime: %d", ERaMillis() / 1000L);
-}
+void handleRFIDCount()
+{
+  if (!rfid.PICC_IsNewCardPresent() || !rfid.PICC_ReadCardSerial())
+  {
+    return;
+  }
 
-void setup() {
-    Serial.begin(115200);
-    pinMode(enterButtonPin, INPUT_PULLUP);
-    pinMode(exitButtonPin, INPUT_PULLUP);
-    pinMode(resetButton, INPUT_PULLUP);
-    ERa.begin(ssid, pass);
-}
+  Serial.print("UID tag: ");
+  String content = "";
+  for (size_t i = 0; i < rfid.uid.size; i++)
+  {
+    Serial.print(rfid.uid.uidByte[i] < 0x10 ? " 0" : " ");
+    Serial.print(rfid.uid.uidByte[i], HEX);
+    content.concat(String(rfid.uid.uidByte[i] < 0x10 ? " 0" : " "));
+    content.concat(String(rfid.uid.uidByte[i], HEX));
+  }
+  Serial.println();
 
-void loop() {
-    ERa.run();
-
-    // Read button states
-    int enterButtonState = digitalRead(enterButtonPin);
-    int exitButtonState = digitalRead(exitButtonPin);
-    int resetButtonState = digitalRead(resetButton);
-
-    // Kiểm tra nút nhấn lên và điều kiện V2, V3
-    if (checkDeparture && !checkStop) {  // V2 == 1 và V3 == 0
-        if (lastEnterButtonState == HIGH && enterButtonState == LOW) {
-            enterCount++;
-            ERa.virtualWrite(V0, enterCount);
-            Serial.println("Student entered bus.");
-            logStudentCount("Enter");
-        }
+  bool authorized = true;
+  for (size_t i = 0; i < rfid.uid.size; i++)
+  {
+    if (rfid.uid.uidByte[i] != authorizedUID[i])
+    {
+      authorized = false;
+      break;
     }
-    lastEnterButtonState = enterButtonState;
+  }
 
-    // Kiểm tra nút nhấn xuống và điều kiện V4, V3
-    if (checkEnd && !checkStop) {  // V4 == 1 và V3 == 0
-        if (lastExitButtonState == HIGH && exitButtonState == LOW) {
-            exitCount++;
-            ERa.virtualWrite(V1, exitCount);
-            Serial.println("Student exited bus.");
-            logStudentCount("Exit");
-        }
+  if (authorized)
+  {
+    if (checkDeparture && !checkStop)
+    {
+      enterCount++;
+      ERa.virtualWrite(V0, enterCount);
+      logStudentCount("Enter (RFID)");
+      digitalWrite(LEDWELCOME, HIGH);
+      digitalWrite(LEDREJECT, LOW);
+      Serial.println("Welcome! Student entered by RFID");
     }
-    lastExitButtonState = exitButtonState;
+    else if (checkEnd && !checkStop)
+    {
+      exitCount++;
+      ERa.virtualWrite(V1, exitCount);
+      logStudentCount("Exit (RFID)");
+      digitalWrite(LEDWELCOME, HIGH);
+      digitalWrite(LEDREJECT, LOW);
+      Serial.println("Goodbye! Student exited by RFID");
+    }
+  }
+  else
+  {
+    Serial.println("Unauthorized RFID card");
+    digitalWrite(LEDWELCOME, LOW);
+    digitalWrite(LEDREJECT, HIGH);
+  }
 
-    // Detect rising edge for reset button
-    if (lastResetButtonState == HIGH && resetButtonState == LOW) {
-        enterCount = 0;
-        exitCount = 0;
-        ERa.virtualWrite(V0, enterCount);
-        ERa.virtualWrite(V1, exitCount);
-        Serial.println("Reset counting people!!");
-    }
-    lastResetButtonState = resetButtonState;
+  delay(200);
+  digitalWrite(LEDWELCOME, LOW);
+  digitalWrite(LEDREJECT, LOW);
+  rfid.PICC_HaltA();
 }
 
-// Function to log student count with timestamp
-void logStudentCount(String event) {
-    String currentTime = getFormattedTime();
-    Serial.print(event + " Time: ");
-    Serial.println(currentTime);
-    Serial.print("Enter count: ");
-    Serial.println(enterCount);
-    Serial.print("Exit count: ");
-    Serial.println(exitCount);
+void setup()
+{
+  Serial.begin(115200);
+  SPI.begin();
+  rfid.PCD_Init();
+
+  pinMode(enterButtonPin, INPUT_PULLUP);
+  pinMode(exitButtonPin, INPUT_PULLUP);
+  pinMode(resetButton, INPUT_PULLUP);
+  pinMode(LEDWELCOME, OUTPUT);
+  pinMode(LEDREJECT, OUTPUT);
+
+  digitalWrite(LEDWELCOME, LOW);
+  digitalWrite(LEDREJECT, LOW);
+
+  ERa.begin(ssid, pass);
+}
+
+void loop()
+{
+  ERa.run();
+
+  // Handle RFID
+  handleRFIDCount();
+
+  // Handle button inputs
+  int enterButtonState = digitalRead(enterButtonPin);
+  int exitButtonState = digitalRead(exitButtonPin);
+  int resetButtonState = digitalRead(resetButton);
+
+  // Handle enter button
+  if (checkDeparture && !checkStop)
+  {
+    if (lastEnterButtonState == HIGH && enterButtonState == LOW)
+    {
+      enterCount++;
+      ERa.virtualWrite(V0, enterCount);
+      logStudentCount("Enter (Button)");
+      Serial.println("Student entered by button.");
+    }
+  }
+  lastEnterButtonState = enterButtonState;
+
+  // Handle exit button
+  if (checkEnd && !checkStop)
+  {
+    if (lastExitButtonState == HIGH && exitButtonState == LOW)
+    {
+      exitCount++;
+      ERa.virtualWrite(V1, exitCount);
+      logStudentCount("Exit (Button)");
+      Serial.println("Student exited by button.");
+    }
+  }
+  lastExitButtonState = exitButtonState;
+
+  // Handle reset button
+  if (lastResetButtonState == HIGH && resetButtonState == LOW)
+  {
+    enterCount = 0;
+    exitCount = 0;
+    ERa.virtualWrite(V0, enterCount);
+    ERa.virtualWrite(V1, exitCount);
+    Serial.println("Reset counting people!!");
+  }
+  lastResetButtonState = resetButtonState;
+}
+
+void logStudentCount(String event)
+{
+  String currentTime = getFormattedTime();
+  Serial.print(event + " Time: ");
+  Serial.println(currentTime);
+  Serial.print("Enter count: ");
+  Serial.println(enterCount);
+  Serial.print("Exit count: ");
+  Serial.println(exitCount);
 }
